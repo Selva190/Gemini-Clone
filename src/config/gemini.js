@@ -91,31 +91,19 @@ function parseRetryAfterFromError(err) {
   return null;
 }
 
-// Simple in-memory cache for identical prompts per model
-const responseCache = new Map(); // key => text
-function cacheKey(model, prompt) {
-  return `${model}:::${prompt}`;
-}
-
-async function sendWithModel(client, modelName, prompt) {
-  const key = cacheKey(modelName, prompt);
-  if (responseCache.has(key)) {
-    return responseCache.get(key);
-  }
-
-  const model = client.getGenerativeModel({ model: modelName });
-  const generationConfig = {
-    temperature: 0.9,
-    topP: 1,
-    topK: 1,
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
-  };
-  const chat = model.startChat({ generationConfig, history: [] });
-  const result = await withTimeout(chat.sendMessage(prompt));
-  const text = result.response.text();
-  // cache successful responses only
-  if (text) responseCache.set(key, text);
-  return text;
+async function* sendWithModelStream(client, modelName, prompt) {
+    const model = client.getGenerativeModel({ model: modelName });
+    const generationConfig = {
+        temperature: 0.9,
+        topP: 1,
+        topK: 1,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+    };
+    const chat = model.startChat({ generationConfig, history: [] });
+    const result = await withTimeout(chat.sendMessageStream(prompt));
+    for await (const chunk of result.stream) {
+        yield chunk.text();
+    }
 }
 
 function throttled() {
@@ -129,24 +117,27 @@ function throttled() {
   return false;
 }
 
-async function runChat(prompt) {
+export async function* runChatStream(prompt) {
   try {
     if (!prompt || !prompt.trim()) {
-      return "Please enter a prompt.";
+      yield "Please enter a prompt.";
+      return;
     }
 
     const throttledSeconds = throttled();
     if (throttledSeconds) {
-      return `You're sending requests too fast. Please wait ~${throttledSeconds}s.`;
+      yield `You're sending requests too fast. Please wait ~${throttledSeconds}s.`;
+      return;
     }
 
     const client = await ensureClient();
     if (!client) {
-      return "Gemini client is not initialized. Check API key and dependencies.";
+      yield "Gemini client is not initialized. Check API key and dependencies.";
+      return;
     }
 
     try {
-      return await sendWithModel(client, MODEL_NAME, prompt);
+      yield* sendWithModelStream(client, MODEL_NAME, prompt);
     } catch (err) {
       // Handle quota/rate-limit errors (HTTP 429)
       const msg = String(err && err.message ? err.message : err);
@@ -158,7 +149,8 @@ async function runChat(prompt) {
           // One-time auto-retry after suggested delay (cap at 60s)
           await delay(retrySec * 1000);
           try {
-            return await sendWithModel(client, MODEL_NAME, prompt);
+            yield* sendWithModelStream(client, MODEL_NAME, prompt);
+            return;
           } catch (_) {
             // continue to fallback path
           }
@@ -166,20 +158,20 @@ async function runChat(prompt) {
 
         if (FALLBACK_MODEL_NAME && FALLBACK_MODEL_NAME !== MODEL_NAME) {
           try {
-            return await sendWithModel(client, FALLBACK_MODEL_NAME, prompt);
+            yield* sendWithModelStream(client, FALLBACK_MODEL_NAME, prompt);
+            return;
           } catch (fbErr) {
             if (import.meta.env.DEV) console.error("Fallback model also failed:", fbErr);
           }
         }
         const retryMsg = retrySec ? ` Please retry in ~${retrySec}s.` : "";
-        return `Rate limit or quota exceeded.${retryMsg} Consider trying again later or updating your API plan.`;
+        yield `Rate limit or quota exceeded.${retryMsg} Consider trying again later or updating your API plan.`;
+        return;
       }
       throw err; // rethrow non-429
     }
   } catch (error) {
     if (import.meta.env.DEV) console.error("Gemini API Error:", error);
-    return "An error occurred while contacting Gemini API.";
+    yield "An error occurred while contacting Gemini API.";
   }
 }
-
-export default runChat;

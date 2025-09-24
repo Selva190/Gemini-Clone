@@ -1,5 +1,5 @@
 import { createContext, useState, useCallback, useMemo } from "react";
-import runChat from "../config/gemini";
+import { runChatStream } from "../config/gemini";
 
 export const Context = createContext();
 
@@ -10,7 +10,6 @@ const ContextProvider = ({ children }) => {
   const [showResult, setShowResult] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resultData, setResultData] = useState("");
-  
 
   // Helpers to format response: **bold** to <b> and preserve newlines
   const escapeHtml = (str) =>
@@ -33,13 +32,6 @@ const ContextProvider = ({ children }) => {
     return html.replace(/\n/g, "<br/>").split("*").join("<br/>");
   };
 
-  // Delay appending a character to the result data to simulate typing
-  const delayPara = (index, nextWord) => {
-    setTimeout(function () {
-      setResultData((prev) => prev + nextWord);
-    }, 2* index);
-  };
-
   const onSent = useCallback(
     async (prompt) => {
       const effectivePrompt = (prompt ?? input).trim();
@@ -50,23 +42,18 @@ const ContextProvider = ({ children }) => {
       setResultData("");
 
       try {
-        let response;
         if (prompt !== undefined) {
           setRecentPrompt(prompt);
-          response = await runChat(prompt);
         } else {
           setRecentPrompt(input);
-          response = await runChat(input);
-        }
-        const html = formatResponseToHtml(response || "");
-        let newResponse = "";
-        const newResponseArray = html.split("");
-        for (let i = 0; i < newResponseArray.length; i++) {
-          const nextWord = newResponseArray[i];
-          delayPara(i, nextWord + "");
-        }
-        if (prompt === undefined) {
           setPrevPrompts((prev) => [...prev, input]);
+        }
+
+        const stream = runChatStream(effectivePrompt);
+        let fullResponse = "";
+        for await (const chunk of stream) {
+          fullResponse += chunk;
+          setResultData(formatResponseToHtml(fullResponse));
         }
       } catch (err) {
         console.error("onSent failed:", err);
@@ -101,7 +88,6 @@ const ContextProvider = ({ children }) => {
       resultData,
       input,
       setInput,
-      delayPara,
     }),
     [prevPrompts, onSent, newChat, recentPrompt, showResult, loading, resultData, input]
   );
