@@ -49,11 +49,16 @@ const ContextProvider = ({ children }) => {
           setPrevPrompts((prev) => [...prev, input]);
         }
 
-        const stream = runChatStream(effectivePrompt);
+        const stream = await runChatStream(effectivePrompt);
         let fullResponse = "";
-        for await (const chunk of stream) {
-          fullResponse += chunk;
-          setResultData(formatResponseToHtml(fullResponse));
+        if (stream && typeof stream[Symbol.asyncIterator] === "function") {
+          for await (const chunk of stream) {
+            fullResponse += chunk;
+            setResultData(formatResponseToHtml(fullResponse));
+          }
+        } else {
+          console.error("runChatStream did not return an async iterable.");
+          setResultData("An error occurred. Please try again.");
         }
       } catch (err) {
         console.error("onSent failed:", err);
